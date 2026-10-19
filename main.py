@@ -1,6 +1,8 @@
 
 import os
+import re
 import threading
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 import telebot
@@ -9,12 +11,12 @@ from flask import Flask
 
 # ==========================================
 # MASIH GUARD PRO
-# Developer: مسیح مختاری | Masih Hackring
+# Developer: Masih Hackring
 # ==========================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEVELOPER_NAME = "کدنویس مسیح هکرینگ | Masih Hackring"
-DEVELOPER_CONTACT = "@Ma3ih01"  # آیدی واقعی خودت را جایگزین کن
+DEVELOPER_CONTACT = "@Ma3ih01"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN در Environment تنظیم نشده است.")
@@ -22,10 +24,22 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# اطلاعات موقت؛ با ری‌استارت پاک می‌شوند
+# اطلاعات موقت؛ پس از ری‌استارت پاک می‌شوند
 warnings = defaultdict(int)
 group_rules = {}
 blocked_links = defaultdict(bool)
+
+# تشخیص لینک در متن و کپشن
+LINK_PATTERN = re.compile(
+    r"""(?ix)
+    (?:https?://|www\.)[^\s<>]+
+    |(?:t\.me|telegram\.me)/[^\s<>]+
+    |(?<![@\w.-])
+      (?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+
+      [a-z]{2,}
+      (?:/[^\s<>]*)?
+    """
+)
 
 
 def is_group(message):
@@ -36,7 +50,8 @@ def is_admin(chat_id, user_id):
     try:
         member = bot.get_chat_member(chat_id, user_id)
         return member.status in ("creator", "administrator")
-    except Exception:
+    except Exception as error:
+        print(f"Admin check error: {error}")
         return False
 
 
@@ -44,7 +59,8 @@ def is_bot_admin(chat_id):
     try:
         member = bot.get_chat_member(chat_id, bot.get_me().id)
         return member.status in ("creator", "administrator")
-    except Exception:
+    except Exception as error:
+        print(f"Bot admin check error: {error}")
         return False
 
 
@@ -57,6 +73,18 @@ def welcome_text(user):
         "🛡️ محافظ گروه: MASIH GUARD PRO"
     )
 
+
+def can_moderate(message):
+    return (
+        is_group(message)
+        and message.from_user is not None
+        and is_admin(message.chat.id, message.from_user.id)
+    )
+
+
+# ------------------------------------------
+# START
+# ------------------------------------------
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -85,12 +113,12 @@ def help_command(message):
         "/setrules متن — تنظیم قوانین (مدیر)\n"
         "/antilink on — فعال‌سازی ضدلینک (مدیر)\n"
         "/antilink off — غیرفعال‌سازی ضدلینک (مدیر)\n"
-        "/warn — اخطار به کاربر (روی پیامش ریپلای کن)\n"
-        "/mute — سکوت کاربر (روی پیامش ریپلای کن)\n"
-        "/unmute — رفع سکوت (روی پیامش ریپلای کن)\n"
-        "/ban — مسدودسازی (روی پیامش ریپلای کن)\n"
-        "/unban شناسه — رفع مسدودی با شناسه کاربر\n\n"
-        "نکته: برای دستورات مدیریتی، ربات باید مدیر گروه باشد."
+        "/warn — اخطار با ریپلای (مدیر)\n"
+        "/mute — سکوت ۱۰ دقیقه‌ای با ریپلای (مدیر)\n"
+        "/unmute — رفع سکوت با ریپلای (مدیر)\n"
+        "/ban — مسدودسازی با ریپلای (مدیر)\n"
+        "/unban شناسه — رفع مسدودی (مدیر)\n\n"
+        "ربات برای مدیریت اعضا باید ادمین گروه باشد."
     )
 
 
@@ -99,20 +127,23 @@ def about(message):
     bot.reply_to(
         message,
         "💎 MASIH GUARD PRO\n"
-        "نسخه اولیه ربات مدیریت گروه\n\n"
+        "نسخه مدیریت گروه با Python\n\n"
         "👨‍💻 کدنویس: مسیح مختاری\n"
-        "🌐 نام برنامه‌نویسی: Masih Hackring\n"
-        f"📩 ارتباط: {DEVELOPER_CONTACT}\n\n"
-        "ساخته‌شده با Python برای مدیریت امن‌تر گروه‌ها."
+        "🌐 Masih Hackring\n"
+        f"📩 ارتباط: {DEVELOPER_CONTACT}"
     )
 
+
+# ------------------------------------------
+# GROUP RULES
+# ------------------------------------------
 
 @bot.message_handler(commands=["rules"])
 def rules(message):
     text = group_rules.get(
         message.chat.id,
         "📜 قوانین هنوز تنظیم نشده‌اند.\n"
-        "مدیر گروه می‌تواند با /setrules قوانین را ثبت کند."
+        "مدیر گروه می‌تواند با /setrules متن قوانین را ثبت کند."
     )
     bot.reply_to(message, text)
 
@@ -120,52 +151,77 @@ def rules(message):
 @bot.message_handler(commands=["setrules"])
 def set_rules(message):
     if not is_group(message):
+        bot.reply_to(message, "این دستور را داخل گروه اجرا کن.")
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه می‌تواند قوانین را تغییر دهد.")
         return
 
-    text = message.text.partition(" ")[2].strip()
-    if not text:
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
         bot.reply_to(message, "روش استفاده:\n/setrules متن قوانین")
         return
 
-    group_rules[message.chat.id] = "📜 قوانین گروه:\n\n" + text
+    group_rules[message.chat.id] = (
+        "📜 قوانین گروه:\n\n" + parts[1].strip()
+    )
     bot.reply_to(message, "✅ قوانین گروه ذخیره شد.")
 
+
+# ------------------------------------------
+# ANTI-LINK SETTINGS
+# ------------------------------------------
 
 @bot.message_handler(commands=["antilink"])
 def anti_link_command(message):
     if not is_group(message):
+        bot.reply_to(message, "این دستور را داخل گروه اجرا کن.")
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
 
     parts = message.text.split(maxsplit=1)
-    if len(parts) != 2 or parts[1].lower() not in ("on", "off"):
-        bot.reply_to(message, "استفاده:\n/antilink on\n/antilink off")
+
+    if len(parts) != 2 or parts[1].lower().strip() not in ("on", "off"):
+        bot.reply_to(
+            message,
+            "روش استفاده:\n/antilink on\n/antilink off"
+        )
         return
 
-    blocked_links[message.chat.id] = parts[1].lower() == "on"
-    status = "فعال شد ✅" if blocked_links[message.chat.id] else "غیرفعال شد."
-    bot.reply_to(message, f"🛡️ ضدلینک {status}")
+    enabled = parts[1].lower().strip() == "on"
+    blocked_links[message.chat.id] = enabled
 
+    if enabled:
+        bot.reply_to(message, "🛡️ ضدلینک فعال شد ✅")
+    else:
+        bot.reply_to(message, "🔓 ضدلینک غیرفعال شد.")
+
+
+# ------------------------------------------
+# WARN
+# ------------------------------------------
 
 @bot.message_handler(commands=["warn"])
 def warn_user(message):
     if not is_group(message):
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
+
     if not message.reply_to_message:
         bot.reply_to(message, "برای اخطار، روی پیام کاربر ریپلای کن.")
         return
 
     target = message.reply_to_message.from_user
-    if target.is_bot or is_admin(message.chat.id, target.id):
-        bot.reply_to(message, "نمی‌توان به ربات یا مدیر گروه اخطار داد.")
+
+    if not target or target.is_bot or is_admin(message.chat.id, target.id):
+        bot.reply_to(message, "نمی‌توان به این کاربر اخطار داد.")
         return
 
     key = (message.chat.id, target.id)
@@ -179,72 +235,104 @@ def warn_user(message):
     )
 
     if count >= 3:
-        warnings[key] = 0
         if not is_bot_admin(message.chat.id):
-            bot.send_message(message.chat.id, "برای محدودسازی، به ربات دسترسی مدیریت بده.")
+            bot.send_message(
+                message.chat.id,
+                "برای محدودسازی، ربات باید ادمین باشد."
+            )
             return
+
         try:
+            until = datetime.now(timezone.utc) + timedelta(minutes=10)
             bot.restrict_chat_member(
                 message.chat.id,
                 target.id,
-                permissions=types.ChatPermissions(can_send_messages=False)
+                permissions=types.ChatPermissions(
+                    can_send_messages=False
+                ),
+                until_date=until
             )
+            warnings[key] = 0
             bot.send_message(
                 message.chat.id,
-                f"🔇 {target.first_name} پس از ۳ اخطار به‌طور موقت محدود شد."
+                f"🔇 {target.first_name} پس از ۳ اخطار، "
+                "برای ۱۰ دقیقه محدود شد."
             )
-        except Exception:
-            bot.send_message(message.chat.id, "محدودسازی انجام نشد؛ دسترسی ربات را بررسی کن.")
+        except Exception as error:
+            print(f"Warn restriction error: {error}")
+            bot.send_message(
+                message.chat.id,
+                "محدودسازی ناموفق بود؛ دسترسی ربات را بررسی کن."
+            )
 
+
+# ------------------------------------------
+# MUTE / UNMUTE
+# ------------------------------------------
 
 @bot.message_handler(commands=["mute"])
 def mute_user(message):
     if not is_group(message):
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
+
     if not message.reply_to_message:
         bot.reply_to(message, "برای سکوت، روی پیام کاربر ریپلای کن.")
         return
 
     target = message.reply_to_message.from_user
-    if target.is_bot or is_admin(message.chat.id, target.id):
-        bot.reply_to(message, "این کاربر قابل محدودسازی با این دستور نیست.")
-        return
-    if not is_bot_admin(message.chat.id):
-        bot.reply_to(message, "ابتدا به ربات دسترسی مدیریت بده.")
+
+    if not target or target.is_bot or is_admin(message.chat.id, target.id):
+        bot.reply_to(message, "این کاربر قابل محدودسازی نیست.")
         return
 
-    from datetime import datetime, timedelta, timezone
-    until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    if not is_bot_admin(message.chat.id):
+        bot.reply_to(message, "ابتدا ربات را ادمین گروه کن.")
+        return
 
     try:
+        until = datetime.now(timezone.utc) + timedelta(minutes=10)
         bot.restrict_chat_member(
             message.chat.id,
             target.id,
-            permissions=types.ChatPermissions(can_send_messages=False),
+            permissions=types.ChatPermissions(
+                can_send_messages=False
+            ),
             until_date=until
         )
-        bot.reply_to(message, f"🔇 {target.first_name} برای ۱۰ دقیقه سکوت شد.")
-    except Exception as e:
-        bot.reply_to(message, f"محدودسازی ناموفق بود: {e}")
+        bot.reply_to(
+            message,
+            f"🔇 {target.first_name} برای ۱۰ دقیقه سکوت شد."
+        )
+    except Exception as error:
+        print(f"Mute error: {error}")
+        bot.reply_to(message, "سکوت ناموفق بود؛ دسترسی ربات را بررسی کن.")
 
 
 @bot.message_handler(commands=["unmute"])
 def unmute_user(message):
     if not is_group(message):
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
+
     if not message.reply_to_message:
         bot.reply_to(message, "روی پیام کاربر ریپلای کن.")
         return
 
     target = message.reply_to_message.from_user
+
+    if not target:
+        bot.reply_to(message, "کاربر پیدا نشد.")
+        return
+
     if not is_bot_admin(message.chat.id):
-        bot.reply_to(message, "ابتدا به ربات دسترسی مدیریت بده.")
+        bot.reply_to(message, "ابتدا ربات را ادمین گروه کن.")
         return
 
     try:
@@ -264,83 +352,141 @@ def unmute_user(message):
                 can_add_web_page_previews=True
             )
         )
-        bot.reply_to(message, f"🔊 محدودیت {target.first_name} برداشته شد.")
-    except Exception:
-        bot.reply_to(message, "رفع محدودیت انجام نشد؛ دسترسی ربات را بررسی کن.")
+        bot.reply_to(
+            message,
+            f"🔊 درخواست رفع سکوت {target.first_name} انجام شد."
+        )
+    except Exception as error:
+        print(f"Unmute error: {error}")
+        bot.reply_to(message, "رفع سکوت ناموفق بود؛ دسترسی ربات را بررسی کن.")
 
+
+# ------------------------------------------
+# BAN / UNBAN
+# ------------------------------------------
 
 @bot.message_handler(commands=["ban"])
 def ban_user(message):
     if not is_group(message):
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
+
     if not message.reply_to_message:
         bot.reply_to(message, "برای مسدودسازی، روی پیام کاربر ریپلای کن.")
         return
 
     target = message.reply_to_message.from_user
-    if target.is_bot or is_admin(message.chat.id, target.id):
+
+    if not target or target.is_bot or is_admin(message.chat.id, target.id):
         bot.reply_to(message, "نمی‌توان این کاربر را مسدود کرد.")
         return
+
     if not is_bot_admin(message.chat.id):
-        bot.reply_to(message, "ابتدا به ربات دسترسی مدیریت بده.")
+        bot.reply_to(message, "ابتدا ربات را ادمین گروه کن.")
         return
 
     try:
         bot.ban_chat_member(message.chat.id, target.id)
         bot.reply_to(message, f"🚫 {target.first_name} از گروه مسدود شد.")
-    except Exception:
-        bot.reply_to(message, "مسدودسازی انجام نشد؛ دسترسی ربات را بررسی کن.")
+    except Exception as error:
+        print(f"Ban error: {error}")
+        bot.reply_to(message, "مسدودسازی ناموفق بود؛ دسترسی ربات را بررسی کن.")
 
 
 @bot.message_handler(commands=["unban"])
 def unban_user(message):
     if not is_group(message):
         return
-    if not is_admin(message.chat.id, message.from_user.id):
+
+    if not can_moderate(message):
         bot.reply_to(message, "⛔ فقط مدیر گروه مجاز است.")
         return
+
     parts = message.text.split(maxsplit=1)
+
     if len(parts) != 2 or not parts[1].lstrip("-").isdigit():
         bot.reply_to(message, "استفاده:\n/unban شناسه_عددی_کاربر")
         return
+
     if not is_bot_admin(message.chat.id):
-        bot.reply_to(message, "ابتدا به ربات دسترسی مدیریت بده.")
+        bot.reply_to(message, "ابتدا ربات را ادمین گروه کن.")
         return
 
     try:
         bot.unban_chat_member(message.chat.id, int(parts[1]))
         bot.reply_to(message, "✅ درخواست رفع مسدودی انجام شد.")
-    except Exception:
+    except Exception as error:
+        print(f"Unban error: {error}")
         bot.reply_to(message, "رفع مسدودی ناموفق بود.")
 
+
+# ------------------------------------------
+# WELCOME NEW MEMBERS
+# ------------------------------------------
 
 @bot.message_handler(content_types=["new_chat_members"])
 def new_members(message):
     for user in message.new_chat_members:
         if not user.is_bot:
-            bot.send_message(message.chat.id, welcome_text(user))
+            bot.send_message(
+                message.chat.id,
+                welcome_text(user)
+            )
 
+
+# ------------------------------------------
+# REAL ANTI-LINK FILTER
+# Must be after command handlers.
+# ------------------------------------------
 
 @bot.message_handler(
-    content_types=["text", "photo", "video", "document", "animation", "sticker"]
+    content_types=[
+        "text",
+        "photo",
+        "video",
+        "document",
+        "animation",
+        "sticker",
+        "audio",
+        "voice",
+        "video_note"
+    ]
 )
 def moderation(message):
-    if not is_group(message) or not blocked_links[message.chat.id]:
+    if not is_group(message):
         return
+
+    if not blocked_links.get(message.chat.id, False):
+        return
+
+    if not message.from_user:
+        return
+
+    # مدیران از فیلتر ضدلینک مستثنا هستند
     if is_admin(message.chat.id, message.from_user.id):
         return
 
     text = message.text or message.caption or ""
-    lowered = text.lower()
-    if "http://" in lowered or "https://" in lowered or "t.me/" in lowered:
-        try:
-            bot.delete_message(message.chat.id, message.message_id)
-        except Exception:
-            pass
 
+    if not text or not LINK_PATTERN.search(text):
+        return
+
+    try:
+        bot.delete_message(
+            message.chat.id,
+            message.message_id
+        )
+        print(f"Anti-link: deleted message in {message.chat.id}")
+    except Exception as error:
+        print(f"Anti-link deletion failed: {error}")
+
+
+# ------------------------------------------
+# RENDER HEALTH CHECKS
+# ------------------------------------------
 
 @app.get("/")
 def health():
@@ -349,17 +495,31 @@ def health():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "bot": "MASIH GUARD PRO"}, 200
+    return {
+        "status": "ok",
+        "bot": "MASIH GUARD PRO"
+    }, 200
 
+
+# ------------------------------------------
+# START BOT AND WEB SERVER
+# ------------------------------------------
 
 def run_bot():
-    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25)
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=25
+    )
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(
+        target=run_bot,
+        daemon=True
+    ).start()
+
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
     )
-
