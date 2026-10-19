@@ -13,8 +13,8 @@ from flask import Flask
 # ==========================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEVELOPER_NAME = "کدنویس مسیح مختاری | Masih Hackring"
-DEVELOPER_CONTACT = "@YOUR_TELEGRAM_USERNAME"  # آیدی واقعی خودت را جایگزین کن
+DEVELOPER_NAME = "کدنویس مسیح هکرینگ | Masih Hackring"
+DEVELOPER_CONTACT = "@Ma3ih01"  # آیدی واقعی خودت را جایگزین کن
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN در Environment تنظیم نشده است.")
